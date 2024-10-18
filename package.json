@@ -1,10 +1,8 @@
 {
-  "name": "new.expensify",
-<<<<<<< HEAD
-  "version": "9.0.41-1",
-=======
-  "version": "9.0.50-7",
->>>>>>> 56cbc83dc583538c01f17228f49261860cffb92c
+  
+    "name": "new.expensify",
+    "version": "9.0.50-7"
+  }
   "author": "Expensify, Inc.",
   "homepage": "https://new.expensify.com",
   "description": "New Expensify is the next generation of Expensify: a reimagination of payments based atop a foundation of chat.",
