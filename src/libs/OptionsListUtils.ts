@@ -41,7 +41,6 @@ import type DeepValueOf from '@src/types/utils/DeepValueOf';
 import {isEmptyObject} from '@src/types/utils/EmptyObject';
 import times from '@src/utils/times';
 import Timing from './actions/Timing';
-import * as ErrorUtils from './ErrorUtils';
 import filterArrayByMatch from './filterArrayByMatch';
 import localeCompare from './LocaleCompare';
 import * as LocalePhoneNumber from './LocalePhoneNumber';
@@ -49,6 +48,7 @@ import * as Localize from './Localize';
 import * as LoginUtils from './LoginUtils';
 import ModifiedExpenseMessage from './ModifiedExpenseMessage';
 import Navigation from './Navigation/Navigation';
+import Parser from './Parser';
 import Performance from './Performance';
 import * as PersonalDetailsUtils from './PersonalDetailsUtils';
 import * as PhoneNumber from './PhoneNumber';
@@ -275,11 +275,11 @@ Onyx.connect({
     },
 });
 
-let allPolicyCategories: OnyxCollection<PolicyCategories> = {};
+let allPolicies: OnyxCollection<Policy> = {};
 Onyx.connect({
-    key: ONYXKEYS.COLLECTION.POLICY_CATEGORIES,
+    key: ONYXKEYS.COLLECTION.POLICY,
     waitForCollectionCallback: true,
-    callback: (val) => (allPolicyCategories = val),
+    callback: (val) => (allPolicies = val),
 });
 
 const lastReportActions: ReportActions = {};
@@ -298,7 +298,11 @@ Onyx.connect({
 
         // Iterate over the report actions to build the sorted and lastVisible report actions objects
         Object.entries(allReportActions).forEach((reportActions) => {
-            const reportID = reportActions[0].split('_')[1];
+            const reportID = reportActions[0].split('_').at(1);
+            if (!reportID) {
+                return;
+            }
+
             const reportActionsArray = Object.values(reportActions[1] ?? {});
             let sortedReportActions = ReportActionUtils.getSortedReportActions(reportActionsArray, true);
             allSortedReportActions[reportID] = sortedReportActions;
@@ -311,7 +315,12 @@ Onyx.connect({
                 sortedReportActions = ReportActionUtils.getCombinedReportActions(sortedReportActions, transactionThreadReportID, transactionThreadReportActionsArray, reportID, false);
             }
 
-            lastReportActions[reportID] = sortedReportActions[0];
+            const firstReportAction = sortedReportActions.at(0);
+            if (!firstReportAction) {
+                delete lastReportActions[reportID];
+            } else {
+                lastReportActions[reportID] = firstReportAction;
+            }
 
             // The report is only visible if it is the last action not deleted that
             // does not match a closed or created state.
@@ -323,31 +332,16 @@ Onyx.connect({
                     reportAction.pendingAction !== CONST.RED_BRICK_ROAD_PENDING_ACTION.DELETE &&
                     !ReportActionUtils.isResolvedActionTrackExpense(reportAction),
             );
-            lastVisibleReportActions[reportID] = reportActionsForDisplay[0];
+            const reportActionForDisplay = reportActionsForDisplay.at(0);
+            if (!reportActionForDisplay) {
+                delete lastVisibleReportActions[reportID];
+                return;
+            }
+            lastVisibleReportActions[reportID] = reportActionForDisplay;
         });
     },
 });
 
-let allTransactions: OnyxCollection<Transaction> = {};
-Onyx.connect({
-    key: ONYXKEYS.COLLECTION.TRANSACTION,
-    waitForCollectionCallback: true,
-    callback: (value) => {
-        if (!value) {
-            return;
-        }
-
-        allTransactions = Object.keys(value)
-            .filter((key) => !!value[key])
-            .reduce((result: OnyxCollection<Transaction>, key) => {
-                if (result) {
-                    // eslint-disable-next-line no-param-reassign
-                    result[key] = value[key];
-                }
-                return result;
-            }, {});
-    },
-});
 let activePolicyID: OnyxEntry<string>;
 Onyx.connect({
     key: ONYXKEYS.NVP_ACTIVE_POLICY_ID,
@@ -467,55 +461,6 @@ function uniqFast(items: string[]): string[] {
 }
 
 /**
- * Get an object of error messages keyed by microtime by combining all error objects related to the report.
- */
-function getAllReportErrors(report: OnyxEntry<Report>, reportActions: OnyxEntry<ReportActions>): OnyxCommon.Errors {
-    const reportErrors = report?.errors ?? {};
-    const reportErrorFields = report?.errorFields ?? {};
-    const reportActionsArray = Object.values(reportActions ?? {});
-    const reportActionErrors: OnyxCommon.ErrorFields = {};
-
-    for (const action of reportActionsArray) {
-        if (action && !isEmptyObject(action.errors)) {
-            Object.assign(reportActionErrors, action.errors);
-        }
-    }
-    const parentReportAction: OnyxEntry<ReportAction> =
-        !report?.parentReportID || !report?.parentReportActionID ? undefined : allReportActions?.[report.parentReportID ?? '-1']?.[report.parentReportActionID ?? '-1'];
-
-    if (ReportActionUtils.wasActionTakenByCurrentUser(parentReportAction) && ReportActionUtils.isTransactionThread(parentReportAction)) {
-        const transactionID = ReportActionUtils.isMoneyRequestAction(parentReportAction) ? ReportActionUtils.getOriginalMessage(parentReportAction)?.IOUTransactionID : null;
-        const transaction = allTransactions?.[`${ONYXKEYS.COLLECTION.TRANSACTION}${transactionID}`];
-        if (TransactionUtils.hasMissingSmartscanFields(transaction ?? null) && !ReportUtils.isSettled(transaction?.reportID)) {
-            reportActionErrors.smartscan = ErrorUtils.getMicroSecondOnyxErrorWithTranslationKey('iou.error.genericSmartscanFailureMessage');
-        }
-    } else if ((ReportUtils.isIOUReport(report) || ReportUtils.isExpenseReport(report)) && report?.ownerAccountID === currentUserAccountID) {
-        if (ReportUtils.shouldShowRBRForMissingSmartscanFields(report?.reportID ?? '-1') && !ReportUtils.isSettled(report?.reportID)) {
-            reportActionErrors.smartscan = ErrorUtils.getMicroSecondOnyxErrorWithTranslationKey('iou.error.genericSmartscanFailureMessage');
-        }
-    } else if (ReportUtils.hasSmartscanError(reportActionsArray)) {
-        reportActionErrors.smartscan = ErrorUtils.getMicroSecondOnyxErrorWithTranslationKey('iou.error.genericSmartscanFailureMessage');
-    }
-    // All error objects related to the report. Each object in the sources contains error messages keyed by microtime
-    const errorSources = {
-        reportErrors,
-        ...reportErrorFields,
-        ...reportActionErrors,
-    };
-
-    // Combine all error messages keyed by microtime into one object
-    const errorSourcesArray = Object.values(errorSources ?? {});
-    const allReportErrors = {};
-
-    for (const errors of errorSourcesArray) {
-        if (!isEmptyObject(errors)) {
-            Object.assign(allReportErrors, errors);
-        }
-    }
-    return allReportErrors;
-}
-
-/**
  * Get the last actor display name from last actor details.
  */
 function getLastActorDisplayName(lastActorDetails: Partial<PersonalDetails> | null, hasMultipleParticipants: boolean) {
@@ -532,26 +477,37 @@ function getAlternateText(option: ReportUtils.OptionData, {showChatPreviewLine =
     const report = ReportUtils.getReportOrDraftReport(option.reportID);
     const isAdminRoom = ReportUtils.isAdminRoom(report);
     const isAnnounceRoom = ReportUtils.isAnnounceRoom(report);
+    const isGroupChat = ReportUtils.isGroupChat(report);
+    const isExpenseThread = ReportUtils.isMoneyRequest(report);
+    const formattedLastMessageText = ReportUtils.formatReportLastMessageText(Parser.htmlToText(option.lastMessageText ?? ''));
 
-    if (!!option.isThread || !!option.isMoneyRequestReport) {
-        return option.lastMessageText ? option.lastMessageText : Localize.translate(preferredLocale, 'report.noActivityYet');
+    if (isExpenseThread || option.isMoneyRequestReport) {
+        return showChatPreviewLine && formattedLastMessageText ? formattedLastMessageText : Localize.translate(preferredLocale, 'iou.expense');
+    }
+
+    if (option.isThread) {
+        return showChatPreviewLine && formattedLastMessageText ? formattedLastMessageText : Localize.translate(preferredLocale, 'threads.thread');
     }
 
     if (option.isChatRoom && !isAdminRoom && !isAnnounceRoom) {
-        return showChatPreviewLine && option.lastMessageText ? option.lastMessageText : option.subtitle;
+        return showChatPreviewLine && formattedLastMessageText ? formattedLastMessageText : option.subtitle;
     }
 
     if ((option.isPolicyExpenseChat ?? false) || isAdminRoom || isAnnounceRoom) {
-        return showChatPreviewLine && !forcePolicyNamePreview && option.lastMessageText ? option.lastMessageText : option.subtitle;
+        return showChatPreviewLine && !forcePolicyNamePreview && formattedLastMessageText ? formattedLastMessageText : option.subtitle;
     }
 
     if (option.isTaskReport) {
-        return showChatPreviewLine && option.lastMessageText ? option.lastMessageText : Localize.translate(preferredLocale, 'report.noActivityYet');
+        return showChatPreviewLine && formattedLastMessageText ? formattedLastMessageText : Localize.translate(preferredLocale, 'task.task');
     }
 
-    return showChatPreviewLine && option.lastMessageText
-        ? option.lastMessageText
-        : LocalePhoneNumber.formatPhoneNumber(option.participantsList && option.participantsList.length > 0 ? option.participantsList[0].login ?? '' : '');
+    if (isGroupChat) {
+        return showChatPreviewLine && formattedLastMessageText ? formattedLastMessageText : Localize.translate(preferredLocale, 'common.group');
+    }
+
+    return showChatPreviewLine && formattedLastMessageText
+        ? formattedLastMessageText
+        : LocalePhoneNumber.formatPhoneNumber(option.participantsList && option.participantsList.length > 0 ? option.participantsList.at(0)?.login ?? '' : '');
 }
 
 function isSearchStringMatchUserDetails(personalDetail: PersonalDetails, searchValue: string) {
@@ -660,12 +616,32 @@ function getLastMessageTextForReport(report: OnyxEntry<Report>, lastActorDetails
         lastMessageTextFromReport = ReportUtils.formatReportLastMessageText(TaskUtils.getTaskReportActionMessage(lastReportAction).text);
     } else if (ReportActionUtils.isCreatedTaskReportAction(lastReportAction)) {
         lastMessageTextFromReport = TaskUtils.getTaskCreatedMessage(lastReportAction);
-    } else if (ReportActionUtils.isActionOfType(lastReportAction, CONST.REPORT.ACTIONS.TYPE.SUBMITTED)) {
-        lastMessageTextFromReport = ReportUtils.getIOUSubmittedMessage(lastReportAction);
-    } else if (lastReportAction?.actionName === CONST.REPORT.ACTIONS.TYPE.APPROVED) {
-        lastMessageTextFromReport = ReportUtils.getIOUApprovedMessage(lastReportAction);
-    } else if (lastReportAction?.actionName === CONST.REPORT.ACTIONS.TYPE.FORWARDED) {
-        lastMessageTextFromReport = ReportUtils.getIOUForwardedMessage(lastReportAction, report);
+    } else if (
+        ReportActionUtils.isActionOfType(lastReportAction, CONST.REPORT.ACTIONS.TYPE.SUBMITTED) ||
+        ReportActionUtils.isActionOfType(lastReportAction, CONST.REPORT.ACTIONS.TYPE.SUBMITTED_AND_CLOSED)
+    ) {
+        const wasSubmittedViaHarvesting = ReportActionUtils.getOriginalMessage(lastReportAction)?.harvesting ?? false;
+        if (wasSubmittedViaHarvesting) {
+            lastMessageTextFromReport = ReportUtils.getReportAutomaticallySubmittedMessage(lastReportAction);
+        } else {
+            lastMessageTextFromReport = ReportUtils.getIOUSubmittedMessage(lastReportAction);
+        }
+    } else if (ReportActionUtils.isActionOfType(lastReportAction, CONST.REPORT.ACTIONS.TYPE.APPROVED)) {
+        const {automaticAction} = ReportActionUtils.getOriginalMessage(lastReportAction) ?? {};
+        if (automaticAction) {
+            lastMessageTextFromReport = ReportUtils.getReportAutomaticallyApprovedMessage(lastReportAction);
+        } else {
+            lastMessageTextFromReport = ReportUtils.getIOUApprovedMessage(lastReportAction);
+        }
+    } else if (ReportActionUtils.isUnapprovedAction(lastReportAction)) {
+        lastMessageTextFromReport = ReportUtils.getIOUUnapprovedMessage(lastReportAction);
+    } else if (ReportActionUtils.isActionOfType(lastReportAction, CONST.REPORT.ACTIONS.TYPE.FORWARDED)) {
+        const {automaticAction} = ReportActionUtils.getOriginalMessage(lastReportAction) ?? {};
+        if (automaticAction) {
+            lastMessageTextFromReport = ReportUtils.getReportAutomaticallyForwardedMessage(lastReportAction, reportID);
+        } else {
+            lastMessageTextFromReport = ReportUtils.getIOUForwardedMessage(lastReportAction, report);
+        }
     } else if (lastReportAction?.actionName === CONST.REPORT.ACTIONS.TYPE.REJECTED) {
         lastMessageTextFromReport = ReportUtils.getRejectedReportMessage();
     } else if (ReportActionUtils.isActionableAddPaymentCard(lastReportAction)) {
@@ -677,6 +653,10 @@ function getLastMessageTextForReport(report: OnyxEntry<Report>, lastActorDetails
     }
 
     return lastMessageTextFromReport || (report?.lastMessageText ?? '');
+}
+
+function hasReportErrors(report: Report, reportActions: OnyxEntry<ReportActions>) {
+    return !isEmptyObject(ReportUtils.getAllReportErrors(report, reportActions));
 }
 
 /**
@@ -725,7 +705,7 @@ function createOption(
 
     const personalDetailMap = getPersonalDetailsForAccountIDs(accountIDs, personalDetails);
     const personalDetailList = Object.values(personalDetailMap).filter((details): details is PersonalDetails => !!details);
-    const personalDetail = personalDetailList[0];
+    const personalDetail = personalDetailList.at(0);
     let hasMultipleParticipants = personalDetailList.length > 1;
     let subtitle;
     let reportName;
@@ -744,8 +724,8 @@ function createOption(
         result.shouldShowSubscript = ReportUtils.shouldReportShowSubscript(report);
         result.isPolicyExpenseChat = ReportUtils.isPolicyExpenseChat(report);
         result.isOwnPolicyExpenseChat = report.isOwnPolicyExpenseChat ?? false;
-        result.allReportErrors = getAllReportErrors(report, reportActions);
-        result.brickRoadIndicator = !isEmptyObject(result.allReportErrors) ? CONST.BRICK_ROAD_INDICATOR_STATUS.ERROR : '';
+        result.allReportErrors = ReportUtils.getAllReportErrors(report, reportActions);
+        result.brickRoadIndicator = hasReportErrors(report, reportActions) ? CONST.BRICK_ROAD_INDICATOR_STATUS.ERROR : '';
         result.pendingAction = report.pendingFields ? report.pendingFields.addWorkspaceRoom ?? report.pendingFields.createChat : undefined;
         result.ownerAccountID = report.ownerAccountID;
         result.reportID = report.reportID;
@@ -783,12 +763,12 @@ function createOption(
         result.alternateText = showPersonalDetails && personalDetail?.login ? personalDetail.login : getAlternateText(result, {showChatPreviewLine, forcePolicyNamePreview});
 
         reportName = showPersonalDetails
-            ? ReportUtils.getDisplayNameForParticipant(accountIDs[0]) || LocalePhoneNumber.formatPhoneNumber(personalDetail?.login ?? '')
+            ? ReportUtils.getDisplayNameForParticipant(accountIDs.at(0)) || LocalePhoneNumber.formatPhoneNumber(personalDetail?.login ?? '')
             : ReportUtils.getReportName(report);
     } else {
         // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
-        reportName = ReportUtils.getDisplayNameForParticipant(accountIDs[0]) || LocalePhoneNumber.formatPhoneNumber(personalDetail?.login ?? '');
-        result.keyForList = String(accountIDs[0]);
+        reportName = ReportUtils.getDisplayNameForParticipant(accountIDs.at(0)) || LocalePhoneNumber.formatPhoneNumber(personalDetail?.login ?? '');
+        result.keyForList = String(accountIDs.at(0));
 
         result.alternateText = LocalePhoneNumber.formatPhoneNumber(personalDetails?.[accountIDs[0]]?.login ?? '');
     }
@@ -1699,23 +1679,6 @@ function getUserToInviteOption({
 }
 
 /**
- * Check whether report has violations
- */
-function shouldShowViolations(report: Report, transactionViolations: OnyxCollection<TransactionViolation[]>) {
-    const {parentReportID, parentReportActionID} = report ?? {};
-    const canGetParentReport = parentReportID && parentReportActionID && allReportActions;
-    if (!canGetParentReport) {
-        return false;
-    }
-    const parentReportActions = allReportActions ? allReportActions[`${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${parentReportID}`] ?? {} : {};
-    const parentReportAction = parentReportActions[parentReportActionID] ?? null;
-    if (!parentReportAction) {
-        return false;
-    }
-    return ReportUtils.shouldDisplayTransactionThreadViolations(report, transactionViolations, parentReportAction);
-}
-
-/**
  * filter options based on specific conditions
  */
 function getOptions(
@@ -1825,7 +1788,7 @@ function getOptions(
     // Filter out all the reports that shouldn't be displayed
     const filteredReportOptions = options.reports.filter((option) => {
         const report = option.item;
-        const doesReportHaveViolations = shouldShowViolations(report, transactionViolations);
+        const doesReportHaveViolations = ReportUtils.shouldShowViolations(report, transactionViolations);
 
         return ReportUtils.shouldReportBeInOptionList({
             report,
@@ -1991,8 +1954,8 @@ function getOptions(
             reportOption.isBold = shouldBoldTitleByDefault || shouldUseBoldText(reportOption);
 
             if (action === CONST.IOU.ACTION.CATEGORIZE) {
-                const policyCategories = allPolicyCategories?.[`${ONYXKEYS.COLLECTION.POLICY_CATEGORIES}${reportOption.policyID}`] ?? {};
-                if (getEnabledCategoriesCount(policyCategories) !== 0) {
+                const reportPolicy = allPolicies?.[`${ONYXKEYS.COLLECTION.POLICY}${reportOption.policyID}`];
+                if (reportPolicy?.areCategoriesEnabled) {
                     recentReportOptions.push(reportOption);
                 }
             } else {
@@ -2084,7 +2047,7 @@ function getOptions(
 /**
  * Build the options for the Search view
  */
-function getSearchOptions(options: OptionList, searchValue = '', betas: Beta[] = []): Options {
+function getSearchOptions(options: OptionList, searchValue = '', betas: Beta[] = [], isUsedInChatFinder = true): Options {
     Timing.start(CONST.TIMING.LOAD_SEARCH_OPTIONS);
     Performance.markStart(CONST.TIMING.LOAD_SEARCH_OPTIONS);
     const optionList = getOptions(options, {
@@ -2094,7 +2057,7 @@ function getSearchOptions(options: OptionList, searchValue = '', betas: Beta[] =
         includeMultipleParticipantReports: true,
         maxRecentReportsToShow: 0, // Unlimited
         sortByReportTypeInSearch: true,
-        showChatPreviewLine: true,
+        showChatPreviewLine: isUsedInChatFinder,
         includeP2P: true,
         forcePolicyNamePreview: true,
         includeOwnedWorkspaceChats: true,
@@ -2102,7 +2065,7 @@ function getSearchOptions(options: OptionList, searchValue = '', betas: Beta[] =
         includeMoneyRequests: true,
         includeTasks: true,
         includeSelfDM: true,
-        shouldBoldTitleByDefault: false,
+        shouldBoldTitleByDefault: !isUsedInChatFinder,
     });
     Timing.end(CONST.TIMING.LOAD_SEARCH_OPTIONS);
     Performance.markEnd(CONST.TIMING.LOAD_SEARCH_OPTIONS);
@@ -2408,9 +2371,9 @@ function getFirstKeyForList(data?: Option[] | null) {
         return '';
     }
 
-    const firstNonEmptyDataObj = data[0];
+    const firstNonEmptyDataObj = data.at(0);
 
-    return firstNonEmptyDataObj.keyForList ? firstNonEmptyDataObj.keyForList : '';
+    return firstNonEmptyDataObj?.keyForList ? firstNonEmptyDataObj?.keyForList : '';
 }
 
 function getPersonalDetailSearchTerms(item: Partial<ReportUtils.OptionData>) {
@@ -2420,6 +2383,31 @@ function getPersonalDetailSearchTerms(item: Partial<ReportUtils.OptionData>) {
 function getCurrentUserSearchTerms(item: ReportUtils.OptionData) {
     return [item.text ?? '', item.login ?? '', item.login?.replace(CONST.EMAIL_SEARCH_REGEX, '') ?? ''];
 }
+
+type PickUserToInviteParams = {
+    canInviteUser: boolean;
+    recentReports: ReportUtils.OptionData[];
+    personalDetails: ReportUtils.OptionData[];
+    searchValue: string;
+    config?: FilterOptionsConfig;
+    optionsToExclude: Option[];
+};
+
+const pickUserToInvite = ({canInviteUser, recentReports, personalDetails, searchValue, config, optionsToExclude}: PickUserToInviteParams) => {
+    let userToInvite = null;
+    if (canInviteUser) {
+        if (recentReports.length === 0 && personalDetails.length === 0) {
+            userToInvite = getUserToInviteOption({
+                searchValue,
+                selectedOptions: config?.selectedOptions,
+                optionsToExclude,
+            });
+        }
+    }
+
+    return userToInvite;
+};
+
 /**
  * Filters options based on the search input value
  */
@@ -2496,16 +2484,7 @@ function filterOptions(options: Options, searchInputValue: string, config?: Filt
         recentReports = orderOptions(recentReports, searchValue);
     }
 
-    let userToInvite = null;
-    if (canInviteUser) {
-        if (recentReports.length === 0 && personalDetails.length === 0) {
-            userToInvite = getUserToInviteOption({
-                searchValue,
-                selectedOptions: config?.selectedOptions,
-                optionsToExclude,
-            });
-        }
-    }
+    const userToInvite = pickUserToInvite({canInviteUser, recentReports, personalDetails, searchValue, config, optionsToExclude});
 
     if (maxRecentReportsToShow > 0 && recentReports.length > maxRecentReportsToShow) {
         recentReports.splice(maxRecentReportsToShow);
@@ -2556,7 +2535,6 @@ export {
     getPersonalDetailsForAccountIDs,
     getIOUConfirmationOptionsFromPayeePersonalDetail,
     isSearchStringMatchUserDetails,
-    getAllReportErrors,
     getPolicyExpenseReportOption,
     getIOUReportIDOfLastAction,
     getParticipantsOption,
@@ -2574,6 +2552,7 @@ export {
     formatMemberForList,
     formatSectionsFromSearchTerm,
     getShareLogOptions,
+    orderOptions,
     filterOptions,
     createOptionList,
     createOptionFromReport,
@@ -2582,12 +2561,13 @@ export {
     getFirstKeyForList,
     canCreateOptimisticPersonalDetailOption,
     getUserToInviteOption,
-    shouldShowViolations,
     getPersonalDetailSearchTerms,
     getCurrentUserSearchTerms,
     getEmptyOptions,
     shouldUseBoldText,
     getAlternateText,
+    pickUserToInvite,
+    hasReportErrors,
 };
 
 export type {MemberForList, CategorySection, CategoryTreeSection, Options, OptionList, SearchOption, PayeePersonalDetails, Category, Tax, TaxRatesOption, Option, OptionTree};
