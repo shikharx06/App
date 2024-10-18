@@ -1,7 +1,11 @@
 source "https://rubygems.org"
 
-gem "cocoapods", "~> 1.11.3"
-gem "fastlane", "~> 2"
+# You may use http://rbenv.org/ or https://rvm.io/ to install and use this version
+ruby ">= 3.3.4"
+
+gem "cocoapods", "= 1.15.2"
+gem 'activesupport', '>= 6.1.7.5', '!= 7.1.0'
+gem "fastlane", "~> 2", ">= 2.222.0"
 gem "xcpretty", "~> 0"
 
 

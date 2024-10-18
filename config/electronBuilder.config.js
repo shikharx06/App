@@ -1,6 +1,5 @@
 const {version} = require('../package.json');
 
-const isPublishing = process.argv.includes('--publish');
 const pullRequestNumber = process.env.PULL_REQUEST_NUMBER;
 
 const s3Bucket = {
@@ -12,9 +11,7 @@ const s3Bucket = {
 const s3Path = {
     production: '/',
     staging: '/',
-    adhoc: process.env.PULL_REQUEST_NUMBER
-        ? `/desktop/${pullRequestNumber}/`
-        : '/',
+    adhoc: process.env.PULL_REQUEST_NUMBER ? `/desktop/${pullRequestNumber}/` : '/',
 };
 
 const macIcon = {
@@ -23,17 +20,14 @@ const macIcon = {
     adhoc: './desktop/icon-adhoc.png',
 };
 
-const isCorrectElectronEnv = ['production', 'staging', 'adhoc'].includes(
-    process.env.ELECTRON_ENV,
-);
+const isCorrectElectronEnv = ['production', 'staging', 'adhoc'].includes(process.env.ELECTRON_ENV);
 
 if (!isCorrectElectronEnv) {
     throw new Error('Invalid ELECTRON_ENV!');
 }
 
 /**
- * The configuration for the production and staging Electron builds.
- * It can be used to create local builds of the same, by omitting the `--publish` flag
+ * The configuration for the debug, production and staging Electron builds.
  */
 module.exports = {
     appId: 'com.expensifyreactnative.chat',
@@ -48,6 +42,15 @@ module.exports = {
         entitlements: 'desktop/entitlements.mac.plist',
         entitlementsInherit: 'desktop/entitlements.mac.plist',
         type: 'distribution',
+        notarize: {
+            teamId: '368M544MTT',
+        },
+        target: [
+            {
+                target: 'default',
+                arch: ['universal'],
+            },
+        ],
     },
     dmg: {
         title: 'New Expensify',
@@ -62,7 +65,6 @@ module.exports = {
             path: s3Path[process.env.ELECTRON_ENV],
         },
     ],
-    afterSign: isPublishing ? './desktop/notarize.js' : undefined,
     files: ['dist', '!dist/www/{.well-known,favicon*}'],
     directories: {
         app: 'desktop',
